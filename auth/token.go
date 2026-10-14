@@ -13,8 +13,8 @@ const TokenTTL = 15 * time.Minute
 var ErrUnknownUser = errors.New("auth: unknown user")
 
 type entry struct {
-	token     string
-	issuedAt  time.Time
+	token    string
+	issuedAt time.Time
 }
 
 // TokenCache hands out access tokens and remembers them so that repeated
