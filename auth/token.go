@@ -10,11 +10,21 @@ import (
 // TokenTTL is how long an issued token stays valid.
 const TokenTTL = 15 * time.Minute
 
+// refreshSkew is how long before actual expiry a cached token is considered
+// stale. Refreshing slightly early avoids handing out a token that expires
+// while the request it is attached to is still in flight.
+const refreshSkew = 30 * time.Second
+
 var ErrUnknownUser = errors.New("auth: unknown user")
 
 type entry struct {
 	token    string
 	issuedAt time.Time
+}
+
+// expired reports whether the entry is past its usable lifetime as of now.
+func (e entry) expired(now time.Time) bool {
+	return !now.Before(e.issuedAt.Add(TokenTTL - refreshSkew))
 }
 
 // TokenCache hands out access tokens and remembers them so that repeated
@@ -41,11 +51,13 @@ func (c *TokenCache) GetOrRefresh(userID string) (string, error) {
 		return "", ErrUnknownUser
 	}
 
+	now := c.now()
+
 	c.mu.RLock()
 	cached, ok := c.entries[userID]
 	c.mu.RUnlock()
 
-	if ok {
+	if ok && !cached.expired(now) {
 		return cached.token, nil
 	}
 
@@ -55,7 +67,14 @@ func (c *TokenCache) GetOrRefresh(userID string) (string, error) {
 	}
 
 	c.mu.Lock()
-	c.entries[userID] = entry{token: token, issuedAt: c.now()}
+	// Re-check under the write lock: a concurrent caller may have refreshed
+	// this user while we were talking to the provider. Prefer whichever entry
+	// is still usable so we do not churn tokens needlessly.
+	if existing, ok := c.entries[userID]; ok && !existing.expired(c.now()) {
+		token = existing.token
+	} else {
+		c.entries[userID] = entry{token: token, issuedAt: c.now()}
+	}
 	c.mu.Unlock()
 
 	return token, nil
